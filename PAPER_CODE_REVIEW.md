@@ -8,13 +8,19 @@ while the Phase 1 seeded training campaign was in flight.
 The first version of this document (before the paper was read carefully)
 contained several errors about what the paper says and what the
 methodological discrepancies between our pipeline and theirs are. The
-v2 revision corrected those errors. This v3 revision incorporates
+v2 revision corrected those errors. The v3 revision incorporated
 direct measurements obtained by re-running the analyzer with both
 statistic conventions (mean-of-log and log-of-mean) computed
-side-by-side on seed-0's 50 checkpoints. The measurements disconfirm
+side-by-side on seed-0's 50 checkpoints. The measurements disconfirmed
 v2's central hypothesis that the mean-of-log vs log-of-mean convention
-accounts for most of the log α gap to the paper. Corrections to v2 are
-noted explicitly in §12.
+accounts for most of the log α gap to the paper. This v4 revision
+incorporates the boundary-layer-exclusion measurement performed on
+seeds 0, 1, and 2 via `boundary_layer_check.py`. The measurement
+both qualifies v3's expectation about which direction the boundary
+effect runs and surfaces a previously-unrecognized training-dynamic
+finding: the post-final-norm anomaly is a *learned* phenomenon that
+emerges between steps ~400 and ~2000, not a feature of the model at
+initialization. Corrections to v2 and v3 are noted explicitly in §12.
 
 The repository is small: MATLAB scripts for the analysis, one Python
 script for activation collection, and a web visualization. The paper
@@ -410,20 +416,46 @@ None of these is the mean-of-log vs log-of-mean convention.
 
 **Net effect on our pilot's interpretation:** our seed-0 log α and λ
 are not directly comparable to the paper's published values, but
-the reason is now clearer:
+the reason is now substantially better understood:
 
 1. The convention difference contributes ≤ 0.5 log units across our
    training trajectory, and ~0.03 at our converged checkpoint. This
    is the smallest contributor.
-2. **Corpus, position-sampling, training-duration, and layer-scope
-   differences are the larger contributors.** Layer scope in particular:
-   our log α fit *including* the post-final-norm and embedding layers
-   is pulled down by the layer-13 anomaly (~3 log units below the fit
-   line in plot 5), so excluding boundary layers — the paper's
-   convention — would shift our log α upward by approximately the
-   contribution of those outliers. The `--exclude_boundary_layers`
-   refinement (§11, item 1) would close more of the gap than the
-   convention fix did.
+2. **The boundary-layer scope difference has now been measured** (§11
+   item 1, completed). The boundary-exclusion shift is Δ log α =
+   −0.48 (paper convention) and Δ λ = +0.085, reproducibly across
+   three seeds. The shift is in the *negative* direction for log α —
+   excluding boundaries pulls log α *downward*, not upward as v3
+   expected. Mechanically this is dominated by the layer-13
+   (post-final-norm) outlier sitting ~1.8 log units below the fit at
+   the far-right end of the x-axis, where it has the most leverage on
+   the slope. Removing it pivots the fit upward at the right and
+   downward at the left, decreasing log α (the y-intercept) and
+   increasing λ (the slope). The layer-1 (post-embedding) outlier
+   also sits below the line but with much smaller leverage; its
+   contribution is dominated by layer 13.
+3. **The right paper-comparison is Llama-2-7B, not GPT-2 medium.** Our
+   model uses RMSNorm and RoPE, matching the Llama family. GPT-2
+   medium uses LayerNorm and learned positional embeddings —
+   architecturally different. The remaining gap analysis below is
+   ordered by architectural relevance:
+
+| Comparison | Our log α (paper, all) | Our log α (paper, excl bdry) | Paper's value | Gap (all) | Gap (excl) |
+|---|---|---|---|---|---|
+| vs Llama-2-7B (paper) | −3.25 | −3.73 | −5.40 | 2.15 | **1.67** |
+| vs GPT-2 medium (paper) | −3.25 | −3.73 | −0.45 | 2.80 | 3.28 |
+
+The boundary exclusion closes 22% of the gap to Llama-2-7B and widens
+the gap to GPT-2 medium by 17%. For the architecturally-matched
+comparison (Llama-2-7B), our final converged paper-convention
+boundary-excluded log α is 1.67 log units above Llama-2-7B's. That
+gap is plausibly explained by scale (150M vs 7B), corpus (FineWeb-Edu
+vs Walden), training duration (1.57B tokens vs full Llama-2
+pretraining), and position-sampling differences — none of which we
+can isolate from a single-architecture pilot study.
+
+4. **The boundary effect is itself a training-dynamic phenomenon**, not
+   a property of the architecture at initialization. See §6.6 below.
 
 ### 6.3 Robust cross-scale findings (basis-invariant)
 
@@ -447,6 +479,18 @@ models, or of some other architectural commonality.
 
 **λ decreases with scale within the Llama 3.2 family**: 1B → 0.35,
 3B → 0.19. Our 150M continues the trend at 0.44.
+
+**Caveat (v4):** the λ values in this table are all-layer fits.
+Under boundary exclusion (paper convention, §6.2), our 150M λ rises
+to 0.51, which would give λ × L = 6.1 — outside the ~5.5
+all-layer-fit conservation band. Whether the "conservation"
+observation survives under boundary exclusion across the other
+Llama family models is an open question; we would need to re-run
+`boundary_layer_check.py`-style exclusion on the paper's released
+`.npy` files to answer this fairly. For now the all-layer numbers
+in this table should be read as the "naive" comparison, with the
+understanding that boundary exclusion shifts our entry but is not
+yet applied symmetrically.
 
 ### 6.4 Kurtosis levels for trained models
 
@@ -517,6 +561,61 @@ distribution)`. **A direct numerical comparison isn't valid.** We can
 compare the depth profile shape (peak in mid-network, drop at ends),
 which we did, but the absolute numbers measure different things.
 
+### 6.6 The post-final-norm anomaly is a learned phenomenon
+
+A previously unrecognized finding from the v4 boundary-layer measurement
+(via `boundary_layer_check.py`'s trajectory plot): **the boundary-layer
+effect is not present at initialization.** It emerges during training.
+
+Concretely, the gap between the all-layer fit and the
+boundary-excluded fit (in log α units) across training looks like:
+
+| Training step | Gap (paper conv.) | Comment |
+|---|---|---|
+| ~100 (untrained)   | ≈ 0.05  | Boundary layers behave like ordinary linear extrapolations of inner-layer flow |
+| ~400               | ≈ 0.3   | Gap is rapidly opening |
+| ~2000              | ≈ 0.6   | Gap has largely saturated |
+| ~5000 (peak)       | ≈ 0.5   | Both fits hump together; gap mildly compressed at peak |
+| ~24000 (converged) | ≈ 0.48  | Gap stable at converged value |
+
+This trajectory is reproducible across all three seeds. The
+boundary-excluded log α even has its own characteristic dip at the
+very-early checkpoints (down to ~−5.5 at step ~120 in paper
+convention) that the all-layer fit doesn't show — because at that
+stage the boundary layers contribute *more* extrapolation-line-like
+behavior than the inner layers do.
+
+**Interpretation:** the post-final-norm anomaly that the paper
+documents in trained foundation models (Mistral, Llama 3.2 1B/3B —
+their §4.3) and that we replicate in our from-scratch training is
+*built during training* by some interaction between RMSNorm and the
+inner network's progressively-learned representations. It is not a
+fixed structural property of the architecture present at random
+initialization.
+
+**Why this matters:**
+
+1. It strengthens the v3 argument that the post-final-norm anomaly is
+   structural-not-fine-tuning. The paper conjectured fine-tuning
+   created the anomaly; v3 noted our from-scratch model also shows it.
+   v4 adds: the from-scratch model *does not* show it at
+   initialization and *develops* it through standard next-token
+   pretraining. So the cause is the interaction of RMSNorm with the
+   progressively-trained representation, not fine-tuning.
+2. It explains the shape of the v3 mid-training log α hump. The
+   all-layer log α hump peaks at ~−2.05 around step 5000. The
+   boundary-excluded log α also humps in the same window but at a
+   lower magnitude (peak ≈ −2.55, paper convention). The hump is a
+   *real inner-network phenomenon*, but the all-layer fit version is
+   amplified by the boundary layers' developing distinctive
+   character.
+3. For Phase 2 cross-architecture comparisons, the converged log α
+   values are stable representatives of "where each variant ends up"
+   regardless of whether boundaries are included. But if Phase 2
+   tracks mid-training trajectories, the boundary-excluded version is
+   the more interpretable signal because it isolates the inner-network
+   dynamics from the boundary-formation dynamics.
+
 ---
 
 ## 7. Pipeline differences summary
@@ -538,11 +637,17 @@ which we did, but the absolute numbers measure different things.
 
 ## 8. The "α normalization mystery" — current understanding
 
-This section's framing has now changed twice. v1 framed log α as
+This section's framing has changed three times. v1 framed log α as
 "an unresolved mystery." v2 framed it as "most likely explained by
-mean-of-log vs log-of-mean convention." v3 reports that we have
+mean-of-log vs log-of-mean convention." v3 reported that we had
 measured both conventions side-by-side on our data and concluded that
-the convention explains essentially none of the gap.
+the convention explains essentially none of the gap. v4 reports
+that we have also measured the boundary-layer-exclusion shift, found
+it goes in the *opposite direction from v3's expectation* for GPT-2
+medium and only partly closes the gap to Llama-2-7B, and concludes
+that the right framing is: **GPT-2 medium isn't our right comparison;
+Llama-2-7B is, and against Llama-2-7B the remaining gap of 1.67 log
+units is plausibly the irreducible scale/corpus/duration difference.**
 
 **Measured contribution of the convention difference (seed-0):**
 
@@ -552,40 +657,76 @@ the convention explains essentially none of the gap.
 | Step 2049 (mid-train) | −2.293 | −2.345 | 0.05 |
 | Step 24000 (converged) | −3.266 | −3.298 | 0.03 |
 
-The gap to the paper's published values for trained models (GPT-2
-medium log α ≈ −0.45, Llama-2-7B log α ≈ −5.4) is in the 2-3 log unit
-range; the convention difference closes ≤ 0.03 of that.
+**Measured contribution of the boundary-layer-exclusion shift
+(three-seed converged checkpoint, paper convention):**
+
+| Seed | log α (all layers) | log α (boundary-excluded) | Δ |
+|---|---|---|---|
+| seed 0 | −3.298 | −3.786 | −0.488 |
+| seed 1 | −3.193 | −3.659 | −0.466 |
+| seed 2 | −3.259 | −3.743 | −0.483 |
+| **mean** | **−3.250** | **−3.729** | **−0.479** |
+
+Across-seed dispersion of the shift: 0.011 (one tenth the dispersion
+of the all-layer log α values themselves). The boundary-exclusion
+effect is highly reproducible. λ shifts in the opposite direction by
++0.085 reproducibly, consistent with the fit pivoting around the
+mid-network points when the boundary outliers are removed.
+
+**Gap to the paper's published log α values:**
+
+| Comparison | All-layer | Boundary-excluded | Closes |
+|---|---|---|---|
+| vs GPT-2 medium (paper log α = −0.45) | gap 2.80 | gap 3.28 | gap widens by 17% |
+| vs Llama-2-7B (paper log α = −5.4)   | gap 2.15 | gap 1.67 | gap closes by 22% |
+
+GPT-2 medium uses LayerNorm and learned positional embeddings; our
+model uses RMSNorm and RoPE. Architecturally, our model is in the
+Llama family. **The proper paper-comparison is Llama-2-7B, against
+which boundary exclusion closes 22% of the gap and the remaining
+1.67 log units is attributable to scale, corpus, training duration,
+and position-sampling differences that we cannot separately isolate
+from a single-architecture pilot study.**
 
 **Status of the various sub-hypotheses:**
 
-| Hypothesis (v2) | Predicted contribution | Measured contribution (v3) | Verdict |
+| Hypothesis | v2/v3 expectation | v4 measurement | Verdict |
 |---|---|---|---|
-| Mean-of-log vs log-of-mean convention | "matches the magnitude" of ~30 log units | 0.03 at convergence | **Disconfirmed for our data** |
-| Pooled vs mean-of-per-coord kurtosis | Could explain `<|κ|>` of 0.87 | `<κ>` = `<|κ|>` to within 0.001 | **Disconfirmed for our data** |
-| Boundary-layer inclusion (us) vs exclusion (paper) | Not estimated in v2 | Not yet measured directly; layer-13 sits ~3 log units below fit line in plot 5 | **Likely substantial; refinement #1 in §11 is the next test** |
-| Corpus / position-sampling / training-duration | Not separately estimable from our data | Not separately estimable from our data | **Probably contribute; cannot isolate at 150M alone** |
+| Mean-of-log vs log-of-mean convention | "matches the magnitude" of ~30 log units (v2) | 0.03 at convergence | **Disconfirmed** |
+| Pooled vs mean-of-per-coord kurtosis | Could explain `<\|κ\|>` of 0.87 (v2) | `<κ>` = `<\|κ\|>` to within 0.001 | **Disconfirmed** |
+| Boundary-layer inclusion (us) vs exclusion (paper) | Should shift our log α upward by 1-2 units (v3) | Shifts log α *downward* by 0.48 paper-convention; closes 22% of Llama-2-7B gap, widens GPT-2 medium gap by 17% | **Disconfirmed for GPT-2 medium; partly confirms for Llama-2-7B** |
+| Architectural mismatch (paper compares to GPT-2 medium with LayerNorm; we use RMSNorm/RoPE) | Not raised explicitly in v3 | Llama-2-7B (matching arch family) gives smaller residual gap (1.67) than GPT-2 medium (3.28) | **Plausible, surfaced in v4** |
+| Corpus / position-sampling / training-duration / scale | Not separately estimable from our data | Not separately estimable from our data; together account for the residual 1.67-unit gap to Llama-2-7B | **Probably the dominant remaining factor** |
 
 **The 30-log-unit gap on the paper's released data is a separate
 issue.** Our log α on `web/assets/llama-2-7B/trajectories.npy` was
 −35.9; the paper's published Llama-2-7B log α is ~−5.4. Now that we
 know the convention difference can only explain ≤ 0.5 log units on
-our own data, it cannot explain 30 units on theirs either under the
-same fitting procedure. The remaining ~30-unit gap is more likely a
+our own data, and the boundary effect can only explain ≤ 0.5 log
+units in either direction, neither can plausibly produce a 30-unit
+gap on the paper's data. The remaining ~30-unit gap is most likely a
 data-normalization artifact in the released `.npy` files (see §6.2
-for hypotheses) than a statistical convention.
+for hypotheses) — distinct from any analysis-convention question.
 
 **Verifiable next steps:**
 
-1. **Boundary-layer exclusion (§11, item 1).** Re-fit log α and λ on
-   the saved `.npz` files with layers 0 and L excluded. If our log α
-   shifts upward by ~1-2 units, this is the dominant non-convention
-   contributor and explains a substantial fraction of the remaining
-   gap to the paper.
+1. **~~Boundary-layer exclusion (§11, item 1)~~ DONE in v4** — measured
+   above. The effect is real, reproducible, and dominated by layer 13.
+   It does not close the gap to GPT-2 medium; it partly closes the gap
+   to Llama-2-7B.
 2. **Email Sarfati** to ask directly about the normalization applied
    to the released `.npy` files vs the data underlying the published
    fits. The 30-unit gap on their data is now the cleanest open
    question; if it's a per-trajectory normalization (e.g., dividing
    by `H`), the answer is one paragraph.
+3. **Cross-architecture comparison (Phase 2 launch).** With the
+   single-architecture pilot exhausted of methodological explanations
+   for the remaining log α gap, the next informative measurement is
+   what log α and λ look like across architecture variants (Llama vs
+   Gemma vs Qwen vs DeepSeek). If λ × L is conserved across the
+   Llama-family at our scale (which §6.3 suggests), and if log α
+   shifts in interpretable ways across variants, Phase 2 will firm
+   up the architectural-vs-other-factors decomposition.
 
 ---
 
@@ -607,10 +748,25 @@ upstream singular values and can't capture this rescaling.
 This was the basis of the proposal's §10.2 disclosure that we treat the
 post-final-norm layer separately. After reading the paper this
 disclosure is well-founded — the paper itself identifies the anomaly and
-excludes the layer from its analyses. We may want to **strengthen** the
-disclosure to claim a small extension of the paper's finding: the
+excludes the layer from its analyses. v3 strengthened this with: the
 anomaly is present in from-scratch training too, suggesting a structural
 rather than fine-tuning origin.
+
+**v4 update**: the anomaly is not present at random initialization
+either. It emerges between steps ~400 and ~2000 of standard
+next-token pretraining (§6.6). This further narrows the cause to
+"the interaction of RMSNorm with progressively-learned inner-network
+representations," not to fine-tuning, alignment, or random
+initialization. The strengthened claim for the writeup:
+
+> Three independent from-scratch 150M Llama-style runs each
+> reproduce the post-final-norm anomaly that Sarfati et al. document
+> in three large foundation models. In our setting we can also
+> verify that the anomaly is absent at random initialization and
+> develops during pretraining, ruling out both fine-tuning and
+> initialization as causes. The structural cause is most plausibly
+> the interaction of the final RMSNorm with the trained inner-network
+> representations — a structural rather than training-recipe origin.
 
 ---
 
@@ -624,7 +780,17 @@ A few methodological disclosures to add to or strengthen in proposal §10.2:
    post-final-norm; we include both. **The post-final-norm layer is
    exactly where the paper finds anomalies in larger trained models,
    and where we also see an outlier (plot 5). Our from-scratch model
-   showing the same anomaly is itself a finding worth reporting.**
+   showing the same anomaly — and our observation that this anomaly
+   emerges during pretraining rather than being present at
+   initialization — is itself a finding worth reporting.** As of v4
+   of this review, we have also measured the effect of layer-scope
+   on log α and λ via `boundary_layer_check.py`: excluding layers 0
+   and L−1 shifts log α (paper convention) by −0.479 ± 0.011 across
+   three seeds, and λ by +0.085 ± 0.001. The shift is dominated by
+   layer 13 (post-final-norm); layer 1 (post-embedding) contributes
+   less. The boundary-excluded values are arguably the better
+   primary numbers for paper comparison since they match what the
+   paper actually fits, but both should be reported for transparency.
 4. **Sign-ambiguity fix.** OLS projection (us) vs per-layer realignment
    (them).
 5. **Statistic convention (§4.5 / §8).** The paper computes
@@ -635,25 +801,35 @@ A few methodological disclosures to add to or strengthen in proposal §10.2:
    (§11 item 2 complete). The measured Jensen-gap between the two
    conventions on our seed-0 data is 0.03 in log α at convergence
    and 0.50 at step 100 — much smaller than the gap to the paper's
-   published values, so this convention difference is now only a
-   minor contributor to the gap. The remaining gap is attributable
-   to corpus, position-sampling, layer-scope, and training-duration
-   differences; quantitative decomposition awaits the
-   `--exclude_boundary_layers` refinement (§11 item 1).
+   published values, so this convention difference is only a minor
+   contributor to the gap.
+6. **Architectural family.** Our model uses RMSNorm and RoPE,
+   matching the Llama family; the paper's primary headline model
+   (GPT-2 medium) uses LayerNorm and learned positional embeddings.
+   When comparing our log α and λ to the paper's published values,
+   the appropriate comparison is to Llama-2-7B (paper convention log
+   α ≈ −5.4), not to GPT-2 medium (paper convention log α ≈ −0.45).
+   With this comparison, boundary-excluded paper-convention log α =
+   −3.73 sits 1.67 log units above Llama-2-7B's value — plausibly
+   accounted for by scale, corpus, training duration, and
+   position-sampling differences.
 
 ---
 
 ## 11. Possible analyzer refinements
 
-1. **Add `--exclude_boundary_layers` flag** so we can compute paper-style
-   statistics (drop layer 0 and post-final-norm). **Now elevated to the
-   most important remaining refinement**: with the convention check
-   (item 2) showing only 0.03 log units of contribution, boundary-layer
-   inclusion is the next-best candidate to explain the residual gap to
-   the paper's published log α. Layer 13 sits ~3 log units below the
-   variance-scaling fit line in seed-0's plot 5; excluding it would
-   pull log α upward materially. Operates on saved `.npz` files; no
-   re-running on checkpoints needed.
+1. **~~Add `--exclude_boundary_layers` flag~~ DONE in v4 of this review**
+   via the standalone `boundary_layer_check.py` script (separate from
+   the main analyzer, since the refit operates on already-saved flow
+   .npz files and doesn't need to mutate them). The script reads
+   `pairwise_residual_variance` and `pairwise_mean_log_var` from each
+   `.npz` file, re-marginalizes across source layers with specified
+   boundary layers dropped, and re-fits log α and λ for both
+   conventions. Outputs include a per-seed summary table, a
+   trajectory plot showing the boundary effect across training, and
+   a Figure-5-style scatter showing which points are kept and which
+   are dropped at the converged checkpoint. The measurements are
+   reported in §6.2, §6.6, and §8 of this document.
 
 2. **~~Add `--statistic_mode {paper, ours}` flag~~ DONE in v3 of this
    review.** The analyzer (`analyze.py`) now computes both conventions
@@ -670,9 +846,8 @@ A few methodological disclosures to add to or strengthen in proposal §10.2:
    projection is sign-robust by construction, so the realignment would
    only affect downstream alignment-residual statistics, not log α or λ.
 
-Items 1 and 3 operate on saved flow `.npz` files (which contain R(t),
-Σ(t), µ(t), per-pair residuals); neither requires re-running on
-checkpoints.
+Item 3 operates on saved flow `.npz` files; doesn't require re-running
+on checkpoints. Items 1 and 2 are both complete as of v4.
 
 ---
 
@@ -757,6 +932,49 @@ computed and saved per checkpoint as of the analyzer modification
    paper's published fits. This is now the cleanest standing open
    question with respect to the paper's released artifacts.
 
+### 12.3 v3 → v4 corrections
+
+The v3 version made two expectations about the boundary-layer
+exclusion that v4 measurement has now refined or corrected.
+Measurements come from `boundary_layer_check.py` run on three seeds.
+
+1. **v3 expected** that excluding boundary layers would shift our log
+   α *upward* by 1-2 log units, on the visual reading that layer 13
+   sits ~3 log units below the all-layer fit line and removing it
+   should pivot the line upward.
+   **v4 correction:** the measured shift is Δ log α (paper) =
+   −0.479 ± 0.011 across three seeds — *downward*, not upward. The
+   mechanical explanation is that both boundary points (layer 1 and
+   layer 13) lie below the fit, and layer 13's far-right position
+   gives it more leverage on the slope. Removing layer 13 pivots the
+   fit upward at the right and downward at the left, decreasing the
+   y-intercept (log α) and increasing the slope (λ). Measured Δ λ =
+   +0.085 ± 0.001, consistent with this pivot interpretation.
+
+2. **v3 expected** that boundary-layer exclusion would "close more of
+   the gap than the convention fix did" to the paper's published log
+   α — implicitly to GPT-2 medium, the paper's named comparison
+   value.
+   **v4 correction:** boundary exclusion *widens* the gap to GPT-2
+   medium (from 2.80 to 3.28) and *closes* 22% of the gap to
+   Llama-2-7B (from 2.15 to 1.67). The v4 reframing is that GPT-2
+   medium is not the architecturally-appropriate comparison —
+   our model uses RMSNorm and RoPE matching the Llama family. The
+   Llama-2-7B comparison is the right one, and against it boundary
+   exclusion does help (modestly).
+
+3. **v4 surfaces a new finding not anticipated in v3:** the
+   boundary-layer effect is itself a learned phenomenon. From
+   `boundary_layer_check.py`'s trajectory plot: the gap between
+   all-layer and boundary-excluded log α is ≈ 0.05 at step 100
+   (untrained), grows to ≈ 0.6 by step 2000, and stabilizes around
+   0.48 through the rest of training. The boundary layers do not
+   have distinct character at initialization; they develop it through
+   pretraining. This is documented in §6.6 of this v4 revision and
+   strengthens §9's argument that the post-final-norm anomaly is
+   structural-not-fine-tuning by ruling out random initialization as
+   the source as well.
+
 ---
 
 ## 13. What this review did NOT change
@@ -771,17 +989,22 @@ results, not how we generate them at the training level:
   / λ / kurtosis values produced by the v3 analyzer are bit-for-bit
   identical to those produced by the v2 analyzer; v3 only *adds* the
   paper-convention values alongside.
-- **Saved flow files, in part:** as of v3, seed-0's `.npz` files have
-  been regenerated to include the paper-convention fields
+- **Saved flow files, in part:** as of v3, seeds 0, 1, and 2's `.npz`
+  files have been regenerated to include the paper-convention fields
   (`log_alpha_paper`, `lambda_paper`, `pairwise_mean_log_var`,
   `kurtosis_abs_per_layer`, `endpoint_mean_log_var`). The "ours"
-  fields are unchanged. Seeds 1, 2, 3 will need their `.npz` files
-  regenerated similarly once their checkpoints are available (or
-  the new analyzer can be run from the start on those seeds).
-- **Phase 1 final plots for seed-0: still valid.** They show the
+  fields are unchanged. v4's `boundary_layer_check.py` operates on
+  these regenerated files without modifying them. Seed 3 will need
+  its `.npz` files regenerated similarly once its checkpoints are
+  available (or the new analyzer can be run from the start on that
+  seed).
+- **Phase 1 final per-seed plots: still valid.** They show the
   ours-convention numbers, which are unchanged. Adding paper-convention
   overlays to the plots is a `flow_series.py` / `plots.py` change still
-  pending.
+  pending. v4's `boundary_layer_check.py` produces its own pair of
+  comparison plots (`boundary_log_alpha_trajectory.png` and
+  `boundary_variance_fit_final.png`) that supplement, not replace,
+  the per-seed Figures 1-8.
 
 ---
 

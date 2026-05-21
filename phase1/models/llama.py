@@ -4,7 +4,9 @@ Llama-style 150M transformer (Variant A, reference architecture).
 Architecture summary:
   - Decoder-only, pre-RMSNorm
   - Rotary Position Embeddings (RoPE) on Q and K, applied per-head
-  - SwiGLU MLP (gate × up, then down projection)
+  - SwiGLU MLP (gate × up, then down projection) — default ffn_type="swiglu"
+  - Plain GELU MLP available as ffn_type="gelu" (parameter-matched);
+    Phase 2's macro-cleanliness baseline for FFN-agnostic experiments
   - Full multi-head causal self-attention (no GQA in the reference variant)
   - Tied input/output embeddings
   - Causal attention via torch.nn.functional.scaled_dot_product_attention
@@ -21,7 +23,7 @@ import torch.nn.functional as F
 from torch.utils.checkpoint import checkpoint as gradient_checkpoint
 
 from config import ModelConfig
-from .shared import RMSNorm, RotaryEmbedding, apply_rope, SwiGLUMLP
+from .shared import RMSNorm, RotaryEmbedding, apply_rope, SwiGLUMLP, GeluMLP
 
 
 class LlamaCausalSelfAttention(nn.Module):
@@ -73,10 +75,17 @@ class LlamaCausalSelfAttention(nn.Module):
 class LlamaBlock(nn.Module):
     """
     Llama-style transformer block: pre-RMSNorm, attention + residual,
-    then pre-RMSNorm + SwiGLU MLP + residual.
+    then pre-RMSNorm + MLP + residual.
 
         h = x + Attention(RMSNorm(x))
         out = h + MLP(RMSNorm(h))
+
+    The MLP class is selected by config.ffn_type:
+      - "swiglu" (default): SwiGLUMLP at intermediate_size, the
+        Phase 1 reference and Llama-2/Mistral convention.
+      - "gelu": plain ungated GeluMLP at 1.5 × intermediate_size,
+        the macro-cleanliness baseline for Phase 2.
+    Both choices use the same per-block parameter count (3 × H × I_swiglu).
     """
 
     def __init__(self, config: ModelConfig, rotary_emb: RotaryEmbedding):
@@ -84,7 +93,18 @@ class LlamaBlock(nn.Module):
         self.attn_norm = RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
         self.attn = LlamaCausalSelfAttention(config, rotary_emb)
         self.mlp_norm = RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
-        self.mlp = SwiGLUMLP(config.hidden_size, config.intermediate_size)
+        ffn_type = getattr(config, "ffn_type", "swiglu")
+        if ffn_type == "swiglu":
+            self.mlp = SwiGLUMLP(config.hidden_size, config.intermediate_size)
+        elif ffn_type == "gelu":
+            # Parameter-matched intermediate size: SwiGLU has 3HI params,
+            # plain MLP has 2HI; so for parity we use I_gelu = 1.5 × I.
+            gelu_intermediate = (3 * config.intermediate_size) // 2
+            self.mlp = GeluMLP(config.hidden_size, gelu_intermediate)
+        else:
+            raise ValueError(
+                f"Unknown ffn_type {ffn_type!r}. Expected 'swiglu' or 'gelu'."
+            )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         x = x + self.attn(self.attn_norm(x))
@@ -210,3 +230,4 @@ class LlamaStyleTransformer(nn.Module):
             )
 
         return logits, loss, hidden_states
+        

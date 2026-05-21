@@ -4,7 +4,10 @@ The 150M Llama-style transformer (Variant A, reference architecture).
 Architecture summary:
   - Decoder-only, pre-RMSNorm
   - Rotary Position Embeddings (RoPE) on Q and K, applied per-head
-  - SwiGLU MLP (gate × up, then down projection)
+  - MLP choice controlled by config.ffn_type:
+      "swiglu": SwiGLU (gate × up, then down projection) — Llama-style default
+      "gelu":   plain ungated GELU MLP with inner dim 1.5 × intermediate_size
+                (parameter-matched to SwiGLU; see GeluMLP docstring)
   - Full multi-head causal self-attention (no GQA in the reference variant;
     GQA is a possible Phase 2 modification)
   - Tied input/output embeddings
@@ -197,6 +200,41 @@ class SwiGLUMLP(nn.Module):
         return self.down_proj(F.silu(gate) * up)
 
 
+class GeluMLP(nn.Module):
+    """
+    Plain ungated MLP with GELU activation:
+        return down(gelu(up(x)))
+
+    Inner dimension is auto-scaled to 1.5 × config.intermediate_size so the
+    parameter count matches SwiGLUMLP at the same config.intermediate_size:
+        SwiGLU: 3 × H × I        = 3 × 896 × 2432 = 6.54 M (per block)
+        GELU:   2 × H × (1.5×I)  = 2 × 896 × 3648 = 6.54 M (per block)
+
+    The 1.5× factor is documented in ModelConfig.intermediate_size: that
+    field always names the *SwiGLU-convention* base size, and the GELU
+    branch derives the wider inner dimension from it. This keeps Phase 1
+    comparisons (SwiGLU vs GELU) parameter-matched even though their
+    intermediate sizes differ.
+
+    Note: this is NOT GeGLU (gated GELU). It's an ungated MLP with GELU
+    as the activation — the cleanest possible deviation from SwiGLU,
+    chosen so that "removing the gate" is the only thing being varied.
+    """
+
+    def __init__(self, config: ModelConfig):
+        super().__init__()
+        inner = (3 * config.intermediate_size) // 2
+        self.up_proj = nn.Linear(
+            config.hidden_size, inner, bias=False
+        )
+        self.down_proj = nn.Linear(
+            inner, config.hidden_size, bias=False
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.down_proj(F.gelu(self.up_proj(x)))
+
+
 class TransformerBlock(nn.Module):
     """
     A single Llama-style transformer block: pre-norm + attention + residual,
@@ -204,6 +242,8 @@ class TransformerBlock(nn.Module):
 
         h = x + Attention(RMSNorm(x))
         out = h + MLP(RMSNorm(h))
+
+    MLP choice is controlled by config.ffn_type ("swiglu" or "gelu").
     """
 
     def __init__(self, config: ModelConfig, rotary_emb: RotaryEmbedding):
@@ -211,7 +251,15 @@ class TransformerBlock(nn.Module):
         self.attn_norm = RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
         self.attn = CausalSelfAttention(config, rotary_emb)
         self.mlp_norm = RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
-        self.mlp = SwiGLUMLP(config)
+        if config.ffn_type == "swiglu":
+            self.mlp = SwiGLUMLP(config)
+        elif config.ffn_type == "gelu":
+            self.mlp = GeluMLP(config)
+        else:
+            raise ValueError(
+                f"Unknown ffn_type: {config.ffn_type!r}. "
+                f"Expected 'swiglu' or 'gelu'."
+            )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         x = x + self.attn(self.attn_norm(x))
@@ -405,3 +453,4 @@ def estimate_training_memory_gb(
         "activations_gb": activations_gb,
         "total_gb": total_gb,
     }
+    

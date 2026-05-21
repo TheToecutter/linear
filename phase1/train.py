@@ -458,9 +458,19 @@ def main():
     parser.add_argument("--num_proc", type=int, default=None)
     parser.add_argument("--device", type=str, default=None,
                         choices=["cuda", "cpu", None])
+    parser.add_argument(
+        "--ffn_type", type=str, default="swiglu",
+        choices=["swiglu", "gelu"],
+        help="FFN choice for the Llama architecture. 'swiglu' (default) "
+             "matches Phase 1; 'gelu' is the macro-cleanliness baseline "
+             "for Phase 2 (parameter-matched plain ungated GELU MLP). "
+             "When using 'gelu', use a different --run_dir from your "
+             "SwiGLU runs to avoid overwriting (e.g. "
+             "../phase1_runs_gelu/seed_0).",
+    )
     args = parser.parse_args()
 
-    model_cfg = ModelConfig()
+    model_cfg = ModelConfig(ffn_type=args.ffn_type)
     train_cfg = TrainingConfig(seed=args.seed)
     if args.total_steps is not None:
         train_cfg.total_steps = args.total_steps

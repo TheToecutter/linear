@@ -8,6 +8,8 @@ What's here:
   - RMSNorm: used by all variants
   - RotaryEmbedding + apply_rope: used by all attention variants
   - SwiGLUMLP: used by Llama and Qwen
+  - GeluMLP: plain ungated GELU FFN; the macro-cleanliness baseline
+    for Phase 2 Llama variants
   - count_parameters, estimate_training_memory_gb: architecture-agnostic utilities
 
 What's NOT here (lives in per-architecture files):
@@ -151,6 +153,39 @@ class SwiGLUMLP(nn.Module):
         return self.down_proj(F.silu(gate) * up)
 
 
+class GeluMLP(nn.Module):
+    """
+    Plain (un-gated) GELU MLP block:
+        return down(gelu(up(x)))
+
+    No gating. Used as a macro-cleanliness baseline for Phase 2: gated
+    FFNs (SwiGLU, GeGLU) have a multiplicative interaction between two
+    projections that can amplify per-token sensitivity and inflate the
+    kurtosis of the residual stream. The ungated GELU produces
+    "well-mannered" variance contributions that scale roughly linearly
+    with input variance, making it easier to attribute observed
+    blunderbuss properties to other design choices (depth, width, etc.)
+    rather than to FFN-internal nonlinearity quirks.
+
+    Parameter-parity note. SwiGLU has 3 × H × I params per block;
+    plain GELU has 2 × H × I_gelu. For the two to match parameter
+    counts, I_gelu = 1.5 × I_swiglu. So replacing SwiGLU at I=2432
+    with GeluMLP at the parameter-matched setting requires I_gelu=3648.
+    Callers are responsible for passing the correct intermediate_size.
+    See LlamaBlock for how this is handled at the model-construction
+    level. NOTE: This is NOT the same as Gemma's "GeGLU" — that's a
+    gated FFN with GELU as the gate activation. This is ungated.
+    """
+
+    def __init__(self, hidden_size: int, intermediate_size: int):
+        super().__init__()
+        self.up_proj = nn.Linear(hidden_size, intermediate_size, bias=False)
+        self.down_proj = nn.Linear(intermediate_size, hidden_size, bias=False)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.down_proj(F.gelu(self.up_proj(x)))
+
+
 # ----------------------------------------------------------------------
 # Parameter counting and memory estimation utilities.
 # ----------------------------------------------------------------------
@@ -198,3 +233,4 @@ def estimate_training_memory_gb(
         "activations_gb": activations_gb,
         "total_gb": total_gb,
     }
+    

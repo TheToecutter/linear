@@ -61,7 +61,26 @@ class ModelConfig:
 
     # FFN inner dimension. SwiGLU param-count parity rule wants I ≈ 8/3 × H
     # ≈ 2389. Rounded to next clean multiple of 64 for vectorization: 2432.
+    # NOTE: this is the *SwiGLU* intermediate size. When ffn_type="gelu" is
+    # selected, LlamaBlock auto-scales the GELU intermediate size to
+    # 1.5 × intermediate_size = 3648 to keep per-block parameter count
+    # matched. See ffn_type below.
     intermediate_size: int = 2432
+
+    # FFN choice for the Llama architecture only. Other architectures
+    # (gemma, qwen, deepseek) have their own FFN choices baked in and
+    # ignore this field.
+    #   "swiglu" (default): gated SwiGLU MLP with silu gate. Phase 1's
+    #     reference. Matches Llama-2 / Mistral conventions.
+    #   "gelu": plain ungated GELU MLP. The "macro-cleanliness" choice
+    #     for Phase 2: removes gating-induced multiplicative variance
+    #     that can confound measurements of effective rank, kurtosis,
+    #     and depth/width-sweep effects. Parameter count is preserved
+    #     because LlamaBlock scales the GELU intermediate size to
+    #     1.5 × intermediate_size.
+    # NOTE: This is NOT Gemma's GeGLU — that's a gated FFN with GELU
+    # as the gate activation. The "gelu" option here is ungated.
+    ffn_type: str = "swiglu"
 
     # Transformer block count. 12 is a conventional choice at this scale
     # (matches Pythia-160M, GPT-2 small).
@@ -132,15 +151,29 @@ class ModelConfig:
         return self.hidden_size // self.num_attention_heads
 
     def estimate_param_count(self) -> int:
-        """Approximate parameter count from the hyperparameters."""
+        """Approximate parameter count from the hyperparameters.
+
+        Accounts for the FFN choice (ffn_type): SwiGLU uses 3 × H × I
+        parameters per block; GELU at parameter-matched intermediate
+        size (1.5 × I) uses 2 × H × (1.5 × I) = 3 × H × I — same as
+        SwiGLU. So the architectures are parameter-matched by
+        construction.
+        """
         V, H, I, L = (
             self.vocab_size, self.hidden_size,
             self.intermediate_size, self.num_hidden_layers,
         )
         embed = V * H  # tied
+        if self.ffn_type == "swiglu":
+            ffn_params = 3 * H * I        # gate (H×I) + up (H×I) + down (I×H)
+        elif self.ffn_type == "gelu":
+            I_gelu = (3 * I) // 2          # parameter-matched intermediate
+            ffn_params = 2 * H * I_gelu    # up (H×I_gelu) + down (I_gelu×H)
+        else:
+            raise ValueError(f"Unknown ffn_type: {self.ffn_type!r}")
         per_layer = (
             4 * H * H        # QKV projection (3 × H²) + output projection (H²)
-            + 3 * H * I      # SwiGLU: gate (H×I) + up (H×I) + down (I×H)
+            + ffn_params
         )
         norms = 2 * H * L + H  # 2 RMSNorms per layer + final norm
         return embed + L * per_layer + norms

@@ -2,4 +2,6 @@ __pycache__/
 phase1/__pycache__/
 phase1/models/__pycache__/
 phase1_runs/
+phase1_runs_gelu/
 smoke_test/
+*.sh
