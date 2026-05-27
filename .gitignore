@@ -4,4 +4,10 @@ phase1/models/__pycache__/
 phase1_runs/
 phase1_runs_gelu/
 smoke_test/
+phase2/__pycache__/
+phase2_runs/
+phase2_plots/
 *.sh
+*.png
+*.csv
+*.txt

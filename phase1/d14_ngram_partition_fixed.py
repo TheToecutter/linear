@@ -340,7 +340,7 @@ def plot_results(run_dir: str, aggregates_by_step_partition: Dict,
     next_agg  = aggregates_by_step_partition.get((final_step, "next"), {})
     prev_agg  = aggregates_by_step_partition.get((final_step, "prev"), {})
     joint_agg = aggregates_by_step_partition.get((final_step, "joint"), {})
-    if next_agg:
+    if next_agg and "baseline" in next_agg:
         L = next_agg["baseline"].size
         layers = np.arange(L)
         ax.plot(layers, next_agg["baseline"], "k-", lw=2.5, label="baseline")
@@ -348,13 +348,13 @@ def plot_results(run_dir: str, aggregates_by_step_partition: Dict,
                 label=f"| next  (n_sub mean {next_agg['n_sub_mean']:.1f})")
         ax.plot(layers, next_agg["null_kurt"], ":", color="C0", lw=1.5,
                 label="null at next k")
-        if prev_agg:
+        if prev_agg and "partition_kurt" in prev_agg:
             ax.plot(layers, prev_agg["partition_kurt"], "--", color="C1",
                     lw=1.5,
                     label=f"| prev  (n_sub mean {prev_agg['n_sub_mean']:.1f})")
             ax.plot(layers, prev_agg["null_kurt"], ":", color="C1", lw=1.5,
                     label="null at prev k")
-        if joint_agg:
+        if joint_agg and "partition_kurt" in joint_agg:
             ax.plot(layers, joint_agg["partition_kurt"], "--", color="C2",
                     lw=1.5,
                     label=f"| (prev, next)  (n_sub mean "
@@ -493,3 +493,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+    
